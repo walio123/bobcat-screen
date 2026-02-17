@@ -347,80 +347,62 @@ void evaluateAlarms(uint32_t now, bool adsValid) {
         else if (eng.hydTemp < 82) alrm.hydHigh = false;
     }
 }
-void updateLevelerGraphics() {
+void updateLevelerGraphics(float rollDeg, float pitchDeg, float turretDeg) {
     static uint32_t lastDraw = 0;
-    static bool first = true; 
-    static float lastVRoll = 0.0f; 
-    static float smoothL = 0.0f, smoothR = 0.0f;
-    static float smoothX = 320.0f, smoothY = 240.0f;
+    static bool first = true;
+    static float sX = 0, sY = 0;
+    static int oldL = 0, oldR = 0;
+    static uint16_t oldX = 320, oldY = 240;
 
-    if (millis() - lastDraw < 50) return; // Ограничаваме до ~20 кадъра/секунда
+    // 1. АКО НЕ Е ВРЕМЕ ЗА РИСУВАНЕ, ИЗЛИЗАМЕ ВЕДНАГА
+    if (millis() - lastDraw < 70) return;
     lastDraw = millis();
 
-    // --- 1. Изчисляваме наклона
-    float angleRad = testAngle * (3.14159265f / 180.0f);
-    float cosA = cosf(angleRad);
-    float sinA = sinf(angleRad);
-    float vRoll = smoothRoll * cosA - smoothPitch * sinA;
+    // 2. МАТЕМАТИКАТА (Твоята ротация)
+    float rad = turretDeg * 0.01745329f;
+    float c = cosf(rad); float s = sinf(rad);
+    float opX =  rollDeg * c + pitchDeg * s;   
+    float opY = -rollDeg * s + pitchDeg * c;   
+    sX += (opX - sX) * 0.25f;
+    sY += (opY - sY) * 0.25f;
 
-    // --- 2. DEAD ZONE ±0.2°
-    if (fabs(vRoll) < 0.2f) vRoll = 0.0f;
+    // 3. ПОМОЩНА ФУНКЦИЯ ЗА ЧАКАНЕ (С ПРОВЕРКА НА БУТОНА)
+    // Това е критично - ако PA8 е зает, пак да гледаме PB12
+    auto waitDisplay = [&]() {
+        uint32_t startWait = millis();
+        while(digitalRead(PA8) == HIGH) {
+            IWatchdog.reload();
+            // Ако натиснеш бутона (PB12) за изход, докато чакаш дисплея - не блокирай!
+            if (digitalRead(PB12) == LOW) return; 
+            if (millis() - startWait > 100) break; // Safety timeout
+        }
+    };
 
-    // --- 3. Смятаме адаптивния фактор преди обновяване на lastVRoll
-    float stepFactor = constrain(fabs(vRoll - lastVRoll), 0.0f, 1.0f);
+    // 4. БАРОВЕ
+    const float pxPerDeg = 6.0f;
+    int L = (int)(sX * pxPerDeg);
+    int R = -(int)(sX * pxPerDeg);
+    L = constrain(L, -120, 120); R = constrain(R, -120, 120);
 
-    // --- 4. ANTI-FLICKER ±0.5°
-    if (fabs(vRoll - lastVRoll) < 0.5f) {
-        vRoll = lastVRoll;
-    } else {
-        lastVRoll = vRoll;
-    }
-
-    // --- 5. Изчисляваме максималната стъпка на баровете
-    float maxStep = 2.0f + stepFactor * 8.0f; // от 2° до 10° за плавност
-
-    // --- БАРОВЕ ---
-    float targetL = -vRoll * 5.0f;
-    float targetR =  vRoll * 5.0f;
-
-    smoothL += constrain(targetL - smoothL, -maxStep, maxStep);
-    smoothR += constrain(targetR - smoothR, -maxStep, maxStep);
-
-    int L = (int)smoothL;
-    int R = (int)smoothR;
-
-    if (first) { oldL = L; oldR = R; }
-
-    if (L != oldL || R != oldR) {
-        hmi.HMI_DrawBox(6,   240 - oldL - 5, 33,  240 - oldL + 5, C_BLACK, true);
-        hmi.HMI_DrawBox(606, 240 - oldR - 5, 633, 240 - oldR + 5, C_BLACK, true);
-        hmi.HMI_DrawBox(6,   240 - L - 5, 33,  240 - L + 5, C_CYAN, true);
-        hmi.HMI_DrawBox(606, 240 - R - 5, 633, 240 - R + 5, C_CYAN, true);
+    if (L != oldL || R != oldR || first) {
+        waitDisplay(); hmi.HMI_DrawBox(6, 240 - oldL - 10, 33, 240 - oldL + 10, C_BLACK, true);
+        waitDisplay(); hmi.HMI_DrawBox(606, 240 - oldR - 10, 633, 240 - oldR + 10, C_BLACK, true);
+        waitDisplay(); hmi.HMI_DrawBox(6, 240 - L - 10, 33, 240 - L + 10, C_CYAN, true);
+        waitDisplay(); hmi.HMI_DrawBox(606, 240 - R - 10, 633, 240 - R + 10, C_CYAN, true);
         oldL = L; oldR = R;
     }
 
-    // --- ТОПЧЕ ---
-    float targetX = 320.0f + 212.0f * sinf(angleRad);
-    float targetY = 240.0f - 212.0f * cosf(angleRad);
-
-    float maxStepBall = 3.0f + stepFactor * 5.0f; // адаптивна стъпка за топчето
-    smoothX += constrain(targetX - smoothX, -maxStepBall, maxStepBall);
-    smoothY += constrain(targetY - smoothY, -maxStepBall, maxStepBall);
-
-    uint16_t nX = (uint16_t)smoothX;
-    uint16_t nY = (uint16_t)smoothY;
-
-    if (first) { oldX = nX; oldY = nY; }
-
-    if (nX != oldX || nY != oldY) {
-        hmi.HMI_DrawBox(oldX - 6, oldY - 6, oldX + 6, oldY + 6, C_BLACK, true);
-        hmi.HMI_DrawBox(nX  - 5, nY  - 5, nX  + 5, nY  + 5, C_CYAN,  true);
+    // 5. ТОПЧЕ
+    uint16_t nX = 320 + (int)(sX * 4.5f);
+    uint16_t nY = 240 - (int)(sY * 4.5f);
+    if (nX != oldX || nY != oldY || first) {
+        waitDisplay(); hmi.HMI_DrawBox(oldX - 7, oldY - 7, oldX + 7, oldY + 7, C_BLACK, true);
+        waitDisplay(); hmi.HMI_DrawBox(nX - 6, nY - 6, nX + 6, nY + 6, C_CYAN, true);
         oldX = nX; oldY = nY;
     }
 
-    first = false; // вече сме инициализирали всичко
+    first = false;
 }
-
 void handleState(SystemState state, StateEvent ev, uint32_t now) {
     if (ev == EV_ENTER) {
         switch(state) {
@@ -433,13 +415,13 @@ void handleState(SystemState state, StateEvent ev, uint32_t now) {
         }
     }
     if (ev == EV_RUN) {
-        if (state == SYS_LEVELING) updateLevelerGraphics();
-        // ТУК БЕШЕ ГРЕШКАТА - МАХНИ updateDisplay ОТТУК!
+        if (state == SYS_LEVELING) updateLevelerGraphics(smoothRoll, smoothPitch, testAngle);
     }
 }
 /// ========================== SETUP ===============================
 void setup() {
     // 1. Пинове
+    pinMode(PA8, INPUT);
     pinMode(PIN_MODE_BUTTON, INPUT_PULLUP);
     pinMode(pinBuzzer, OUTPUT); 
     digitalWrite(pinBuzzer, LOW); 
