@@ -350,35 +350,35 @@ void evaluateAlarms(uint32_t now, bool adsValid) {
 void updateLevelerGraphics(float rollDeg, float pitchDeg, float turretDeg) {
     static uint32_t lastDraw = 0;
     static bool first = true;
-    static float sX = 0, sY = 0;
+    static float sX = 0; // Само за баровете
     static int oldL = 0, oldR = 0;
     static uint16_t oldX = 320, oldY = 240;
 
-    // 1. АКО НЕ Е ВРЕМЕ ЗА РИСУВАНЕ, ИЗЛИЗАМЕ ВЕДНАГА
-    if (millis() - lastDraw < 70) return;
+    if (millis() - lastDraw < 60) return;
     lastDraw = millis();
 
-    // 2. МАТЕМАТИКАТА (Твоята ротация)
+    // 1. МАТЕМАТИКА ЗА БАРОВЕТЕ (Наклон спрямо оператора)
     float rad = turretDeg * 0.01745329f;
     float c = cosf(rad); float s = sinf(rad);
-    float opX =  rollDeg * c + pitchDeg * s;   
-    float opY = -rollDeg * s + pitchDeg * c;   
-    sX += (opX - sX) * 0.25f;
-    sY += (opY - sY) * 0.25f;
+    float opX = rollDeg * c + pitchDeg * s; // Това мести баровете
+    sX += (opX - sX) * 0.25f; // Филтър само за баровете
 
-    // 3. ПОМОЩНА ФУНКЦИЯ ЗА ЧАКАНЕ (С ПРОВЕРКА НА БУТОНА)
-    // Това е критично - ако PA8 е зает, пак да гледаме PB12
+    // 2. МАТЕМАТИКА ЗА ТОПЧЕТО (Само въртене на купола)
+    // Използваме фиксиран радиус 200, за да обикаля в кръг
+    uint16_t nX = 320 + (uint16_t)(200.0f * sinf(rad));
+    uint16_t nY = 240 - (uint16_t)(200.0f * cosf(rad));
+
+    // Помощна функция за чакане (с проверка на PB12)
     auto waitDisplay = [&]() {
         uint32_t startWait = millis();
         while(digitalRead(PA8) == HIGH) {
             IWatchdog.reload();
-            // Ако натиснеш бутона (PB12) за изход, докато чакаш дисплея - не блокирай!
             if (digitalRead(PB12) == LOW) return; 
-            if (millis() - startWait > 100) break; // Safety timeout
+            if (millis() - startWait > 80) break;
         }
     };
 
-    // 4. БАРОВЕ
+    // 3. РИСУВАНЕ НА БАРОВЕТЕ (Наклон)
     const float pxPerDeg = 6.0f;
     int L = (int)(sX * pxPerDeg);
     int R = -(int)(sX * pxPerDeg);
@@ -392,12 +392,10 @@ void updateLevelerGraphics(float rollDeg, float pitchDeg, float turretDeg) {
         oldL = L; oldR = R;
     }
 
-    // 5. ТОПЧЕ
-    uint16_t nX = 320 + (int)(sX * 4.5f);
-    uint16_t nY = 240 - (int)(sY * 4.5f);
+    // 4. РИСУВАНЕ НА ТОПЧЕТО (Посока на купола)
     if (nX != oldX || nY != oldY || first) {
-        waitDisplay(); hmi.HMI_DrawBox(oldX - 7, oldY - 7, oldX + 7, oldY + 7, C_BLACK, true);
-        waitDisplay(); hmi.HMI_DrawBox(nX - 6, nY - 6, nX + 6, nY + 6, C_CYAN, true);
+        waitDisplay(); hmi.HMI_DrawBox(oldX - 8, oldY - 8, oldX + 8, oldY + 8, C_BLACK, true);
+        waitDisplay(); hmi.HMI_DrawBox(nX - 7, nY - 7, nX + 7, nY + 7, C_CYAN, true);
         oldX = nX; oldY = nY;
     }
 
